@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mestre do Jogo IA</title>
+    <link rel="stylesheet" href="style.css">
+
+    <!-- Marked.js: traduz o Markdown da IA para HTML -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- DOMPurify: limpa o HTML gerado (segurança contra XSS) -->
+    <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+    <!-- canvas-confetti: confetes quando o jogador acerta -->
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
+</head>
+<body>
+
+    <div class="chat-container">
+        <div class="chat-header">
+            <div>
+                <h3>🎲 Mestre do Jogo</h3>
+                <small id="jogadorAtual" class="jogador-atual"></small>
+            </div>
+            <div class="header-botoes">
+                <button id="btnRanking" onclick="abrirRanking()">🏆 Ver Ranking</button>
+                <button id="btnLimpar" onclick="limparConversa()">🗑️ Limpar</button>
+                <button id="btnDownload" onclick="baixarPDF()">📥 PDF</button>
+            </div>
+        </div>
+
+        <div id="chat-box" class="chat-box">
+            <!-- Mensagens aparecem aqui -->
+        </div>
+
+        <div class="input-area">
+            <input type="text" id="userInput" placeholder="Digite sua resposta..." onkeydown="verificarTecla(event)">
+            <button id="btnEnviar" onclick="enviar()">Enviar</button>
+        </div>
+
+        <!-- Tela de identificação (Nickname) -->
+        <div id="telaLogin" class="overlay">
+            <div class="cartao">
+                <h2>🔐 Cofre do Conhecimento</h2>
+                <p>Escolha seu apelido para entrar no jogo e disputar o ranking!</p>
+                <input type="text" id="inputNick" maxlength="20" placeholder="Seu apelido"
+                       onkeydown="if (event.key === 'Enter') entrar()">
+                <small id="erroNick" class="erro"></small>
+                <button onclick="entrar()">Começar a jogar</button>
+            </div>
+        </div>
+
+        <!-- Painel do Ranking -->
+        <div id="telaRanking" class="overlay escondido">
+            <div class="cartao cartao-ranking">
+                <div class="ranking-topo">
+                    <h2>🏆 Hall da Fama</h2>
+                    <button class="btn-fechar" onclick="fecharRanking()">✕</button>
+                </div>
+                <div id="conteudoRanking"></div>
+                <button onclick="abrirRanking()">🔄 Atualizar</button>
+            </div>
+        </div>
+
+        <!-- Aviso de XP (+50 XP / -10 XP) -->
+        <div id="avisoXP" class="aviso-xp"></div>
+    </div>
+
+    <script>
+        // ====== CONFIGURAÇÃO ======
+        // Local: usa o localhost. Na Vercel: troque pela URL do seu back-end no Render.
+        const API_RENDER = 'https://SEU-APP.onrender.com';
+        const ehLocal = ['localhost', '127.0.0.1', ''].includes(location.hostname);
+        const API_URL = ehLocal ? 'http://localhost:3000' : API_RENDER;
+
+        const MENSAGEM_INICIAL = 'Olá, aventureiro! Sou o **Guardião do Cofre do Conhecimento**. 🔐\n\n' +
+            'Digite **"quero jogar"** e eu te passo a primeira charada!';
+        let conversaCompleta = ''; // Armazena o texto para o PDF
+        let nickname = '';
+
+        // ====== IDENTIDADE (Nickname) ======
+        function lerNickSalvo() {
+            try { return localStorage.getItem('nickname') || ''; } catch { return ''; }
+        }
+
+        function salvarNick(nick) {
+            try { localStorage.setItem('nickname', nick); } catch { /* sem storage, segue o jogo */ }
+        }
+
+        function entrar() {
+            const nick = document.getElementById('inputNick').value.trim();
+            const erro = document.getElementById('erroNick');
+
+            if (nick.length < 2 || nick.length > 20) {
+                erro.innerText = 'O apelido precisa ter de 2 a 20 caracteres.';
+                return;
+            }
+
+            erro.innerText = '';
+            nickname = nick;
+            salvarNick(nick);
+            document.getElementById('jogadorAtual').innerHTML =
+                `Jogando como <strong></strong> · <a href="#" onclick="trocarJogador(); return false;">trocar</a>`;
+            document.querySelector('#jogadorAtual strong').innerText = nickname;
+            document.getElementById('telaLogin').classList.add('escondido');
+            alternarEnvio(true);
+        }
+
+        function trocarJogador() {
+            document.getElementById('inputNick').value = '';
+            document.getElementById('chat-box').innerHTML = '';
+            conversaCompleta = '';
+            nickname = '';
+            exibirMensagem(MENSAGEM_INICIAL, 'ai');
+            document.getElementById('telaLogin').classList.remove('escondido');
+            alternarEnvio(false);
+            document.getElementById('inputNick').focus();
+        }
+
+        // ====== CHAT ======
+        async function enviar() {
+            if (!nickname) return trocarJogador(); // O chat só funciona com apelido
+
+            const input = document.getElementById('userInput');
+            const texto = input.value.trim();
+            if (!texto) return;
+
+            exibirMensagem(texto, 'user');
+            input.value = '';
+            conversaCompleta += `${nickname}: ${texto}\n`;
+
+            const carregando = exibirMensagem('Pensando...', 'ai carregando');
+            alternarEnvio(false);
+
+            try {
+                const response = await fetch(`${API_URL}/api/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pergunta: texto, nickname })
+                });
+                const dados = await response.json();
+                carregando.remove();
+
+                if (!response.ok) throw new Error(dados.erro || 'Erro no servidor');
+
+                exibirMensagem(dados.resposta, 'ai');
+                conversaCompleta += `Mestre: ${dados.resposta}\n\n`;
+
+                if (dados.xpGanho) mostrarAvisoXP(dados.xpGanho);
+                if (dados.xpGanho > 0 || /parab[ée]ns|acertou/i.test(dados.resposta)) soltarConfete();
+            } catch (e) {
+                carregando.remove();
+                exibirMensagem('⚠️ Erro ao conectar com o servidor.', 'ai');
+                console.error(e);
+            } finally {
+                alternarEnvio(true);
+            }
+        }
+
+        function exibirMensagem(texto, tipo) {
+            const chatBox = document.getElementById('chat-box');
+            const div = document.createElement('div');
+            div.className = `msg ${tipo}`;
+
+            if (tipo === 'ai') {
+                // Markdown -> HTML (limpo pelo DOMPurify)
+                div.innerHTML = DOMPurify.sanitize(marked.parse(texto));
+            } else {
+                div.innerText = texto;
+            }
+
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+            return div;
+        }
+
+        function alternarEnvio(ativo) {
+            const podeEnviar = ativo && !!nickname;
+            document.getElementById('btnEnviar').disabled = !podeEnviar;
+            document.getElementById('userInput').disabled = !podeEnviar;
+            if (podeEnviar) document.getElementById('userInput').focus();
+        }
+
+        function verificarTecla(e) {
+            if (e.key === 'Enter') enviar();
+        }
+
+        // ====== XP E CONFETES ======
+        function mostrarAvisoXP(xp) {
+            const aviso = document.getElementById('avisoXP');
+            aviso.innerText = xp > 0 ? `+${xp} XP ⭐` : `${xp} XP 💔`;
+            aviso.className = `aviso-xp visivel ${xp > 0 ? 'ganhou' : 'perdeu'}`;
+            setTimeout(() => { aviso.className = 'aviso-xp'; }, 2500);
+        }
+
+        function soltarConfete() {
+            if (typeof confetti !== 'function') return;
+            confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 } });
+        }
+
+        // ====== RANKING (Hall da Fama) ======
+        async function abrirRanking() {
+            const painel = document.getElementById('telaRanking');
+            const conteudo = document.getElementById('conteudoRanking');
+            painel.classList.remove('escondido');
+            conteudo.innerHTML = '<p class="vazio">⏳ Carregando...</p>';
+
+            try {
+                const response = await fetch(`${API_URL}/api/ranking`);
+                const ranking = await response.json();
+                if (!response.ok) throw new Error(ranking.erro);
+
+                desenharRanking(ranking);
+            } catch (e) {
+                conteudo.innerHTML = '<p class="vazio">⚠️ Não foi possível carregar o ranking.</p>';
+                console.error(e);
+            }
+        }
+
+        function desenharRanking(ranking) {
+            const conteudo = document.getElementById('conteudoRanking');
+
+            if (ranking.length === 0) {
+                conteudo.innerHTML = '<p class="vazio">Ninguém pontuou ainda. Seja o primeiro! 🚀</p>';
+                return;
+            }
+
+            const medalhas = { 1: '🥇', 2: '🥈', 3: '🥉' };
+            const tabela = document.createElement('table');
+            tabela.className = 'tabela-ranking';
+            tabela.innerHTML = '<thead><tr><th>#</th><th>Jogador</th><th>XP</th></tr></thead>';
+
+            const corpo = document.createElement('tbody');
+            ranking.forEach((j) => {
+                const linha = document.createElement('tr');
+                if (j.nome === nickname) linha.classList.add('eu');
+
+                const tdPos = document.createElement('td');
+                tdPos.className = 'posicao';
+                tdPos.innerText = medalhas[j.posicao] || `${j.posicao}º`;
+
+                const tdNome = document.createElement('td');
+                const titulo = document.createElement('span');
+                titulo.className = `titulo titulo-${j.titulo.toLowerCase()}`;
+                titulo.innerText = j.titulo;
+                const nome = document.createElement('span');
+                nome.innerText = ` ${j.nome}`; // innerText evita injeção de HTML pelo apelido
+                tdNome.append(titulo, nome);
+
+                const tdXp = document.createElement('td');
+                tdXp.className = 'xp';
+                tdXp.innerText = j.xp;
+
+                linha.append(tdPos, tdNome, tdXp);
+                corpo.appendChild(linha);
+            });
+
+            tabela.appendChild(corpo);
+            conteudo.innerHTML = '';
+            conteudo.appendChild(tabela);
+        }
+
+        function fecharRanking() {
+            document.getElementById('telaRanking').classList.add('escondido');
+        }
+
+        // ====== LIMPAR CONVERSA (o XP continua!) ======
+        async function limparConversa() {
+            if (!nickname) return;
+            if (!confirm('Apagar a conversa e a memória da IA? Seu XP continua salvo.')) return;
+
+            const btn = document.getElementById('btnLimpar');
+            btn.disabled = true;
+
+            try {
+                const url = `${API_URL}/api/chat/limpar?nickname=${encodeURIComponent(nickname)}`;
+                const response = await fetch(url, { method: 'DELETE' });
+                const dados = await response.json();
+                if (!response.ok) throw new Error(dados.erro);
+
+                document.getElementById('chat-box').innerHTML = '';
+                conversaCompleta = '';
+                exibirMensagem(MENSAGEM_INICIAL, 'ai');
+            } catch (e) {
+                alert('Não foi possível limpar o histórico.');
+                console.error(e);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        // ====== PDF ======
+        async function baixarPDF() {
+            if (!conversaCompleta) return alert('Inicie uma conversa primeiro!');
+
+            const btn = document.getElementById('btnDownload');
+            btn.innerText = '⏳...';
+
+            try {
+                const response = await fetch(`${API_URL}/api/pdf`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ historico: conversaCompleta })
+                });
+                if (!response.ok) throw new Error('Erro ao gerar PDF');
+
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'resumo_conversa.pdf';
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch (e) {
+                alert('Não foi possível gerar o PDF.');
+                console.error(e);
+            } finally {
+                btn.innerText = '📥 PDF';
+            }
+        }
+
+        // ====== INÍCIO ======
+        exibirMensagem(MENSAGEM_INICIAL, 'ai');
+        alternarEnvio(false);
+        const nickSalvo = lerNickSalvo();
+        if (nickSalvo) {
+            document.getElementById('inputNick').value = nickSalvo;
+            entrar();
+        } else {
+            document.getElementById('inputNick').focus();
+        }
+    </script>
+</body>
+</html>
